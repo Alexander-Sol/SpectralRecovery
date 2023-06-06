@@ -48,3 +48,147 @@ ConditionPatterns <- list(
 )
 
 singleCellConditions <- c("0.2ng", "500pg", "250pg", "125pg", "Single Cell")
+# Combined File Analysis ----
+
+SummarizeAllQuantifiedPeaks <- function(filePath, scoreThreshold) 
+{
+  read_tsv(filePath) %>%
+    group_by(`File Name`) %>%
+    summarise(
+      TotalPeaks = n(),
+      MsmsPeaks = sum(`Peak Detection Type` == "MSMS"),
+      MbrPeaks = sum(`Peak Detection Type` == "MBR"),
+      SpectraRecovered = sum(!(`Spectral Contrast Angle` %in% c("Spectrum Not Found", "-1"))),
+      ZeroScoreSpectra = sum(`Spectral Contrast Angle` == "0"),
+      HighScoreSpectra = `Spectral Contrast Angle` [`Spectral Contrast Angle` != "Spectrum Not Found"] %>% 
+        as.numeric() %>% .[. > scoreThreshold] %>% length(),
+      PercentMbr = 100 * MbrPeaks / TotalPeaks,
+      PercentRecovery = 100 * SpectraRecovered / MbrPeaks,
+      PercentZeroSpectra = 100 * ZeroScoreSpectra / SpectraRecovered,
+    )
+}
+
+SummarizeRecoveredSpectra <- function(filePath, scoreThreshold)
+{
+  read_tsv(filePath) %>%
+    group_by(`File Name`) %>%
+    summarise(
+      SpectraRecovered = sum(`Normalized Spectral Angle` != "Spectrum Not Found") - sum(`Normalized Spectral Angle` == "-1"),
+      ZeroScoreSpectra = sum(`Normalized Spectral Angle` == "0"),
+      HighScoreSpectra = `Normalized Spectral Angle` [`Normalized Spectral Angle` != "Spectrum Not Found"] %>% 
+        as.numeric() %>% .[. > scoreThreshold] %>% length(),
+      PercentZeroSpectra = 100 * ZeroScoreSpectra / SpectraRecovered,
+    )
+}
+
+SummarizeAllPsms <- function(filePath)
+{
+  read_tsv(filePath) %>%
+    filter(Contaminant == "N" & Decoy == "N") %>% 
+    filter(as.numeric(QValue) <= 0.01) %>%
+    group_by(`File Name`) %>%
+      summarise(
+        UniquePeptides = unique(`Full Sequence`) %>% length()
+      )
+}
+
+SummarizeMqEvidence <- function(filePath)
+{
+  maxQuantMbrCount <- read_tsv(filePath) %>%
+    group_by(`Raw file`) %>%
+    summarise(MbrPeaks = sum(!is.na(`Match m/z difference`)))
+  
+  maxQuantPeptideCount <- read_tsv(filePath) %>%
+    filter(is.na(Reverse) & is.na(`Potential contaminant`)) %>%
+    filter(`MS/MS count` > 0) %>%
+    filter(PEP <= 0.01) %>%
+    group_by(`Raw file`) %>%
+    summarise(
+      UniquePeptides = unique(`Modified sequence`) %>% length()
+    )
+  
+  return(merge(maxQuantMbrCount, maxQuantPeptideCount, by = "Raw file"))
+}
+
+SummarizeMqSummary <- function(filePath)
+{
+  read_tsv(filePath) %>%
+    mutate(
+      `File Name` = `Raw file`,
+      MbrPeaks = MbrPeaks,
+      MsmsPeaks = `MS/MS identified`,
+      PercentMbr = 100 * MbrPeaks / (MsmsPeaks + MbrPeaks),
+      UniquePeptides = `Peptide sequences identified`,
+      MsmsScans = `MS/MS`,
+      TotalPeaks = Peaks,
+      FragmentedPeaks = `Peaks sequenced`,
+      IsotopeEnvelopes = `Isotope patterns`,
+      FragmentedIsotopeEnvelopes = `Isotope patterns sequenced`,
+      PercentIsotopeEnvelopesFragmented = 100 * FragmentedIsotopeEnvelopes / IsotopeEnvelopes,
+      .keep = "none"
+    )
+}
+
+#Analyzes multiple output files, then combines the information into one table
+RunAnalysis <- function(MetaFolder, MaxQuantFolder, HighScoreThreshold = 0.6) {
+  
+  # MetaMorpheus Analysis
+  mbrTableMeta <- 
+    SummarizeAllQuantifiedPeaks(paste0(MetaFolder, "/AllQuantifiedPeaks.tsv"), HighScoreThreshold)
+  metaSummary <- SummarizeAllPsms(paste0(MetaFolder, "/AllPSMs.psmtsv" ))
+  metaResults <- merge(mbrTableMeta, metaSummary, by = "File Name")
+  
+  # MaxQuant Analysis
+  maxQuantEvidence <- SummarizeMqEvidence(paste0(MaxQuantFolder, "/evidence.txt" ))
+  maxQuantSummary <- SummarizeMqSummary(paste0(MaxQuantFolder, "/summary.txt" ))
+  maxQuantRecoveredSpectra <- 
+    SummarizeRecoveredSpectra(paste0(MaxQuantFolder, "/RecoveredSpectra.psmtsv"), HighScoreThreshold)
+  
+  # Merge them all together
+  maxQuantResults <- merge(maxQuantEvidence, maxQuantSummary, by = "Raw file") %>%
+    mutate(
+      `File Name` = `Raw file`,
+      MbrPeaks = MbrPeaks,
+      MsmsPeaks = `MS/MS identified`,
+      PercentMbr = 100 * MbrPeaks / (MsmsPeaks + MbrPeaks),
+      UniquePeptides = `Peptide sequences identified`,
+      MsmsScans = `MS/MS`,
+      TotalPeaks = Peaks,
+      FragmentedPeaks = `Peaks sequenced`,
+      IsotopeEnvelopes = `Isotope patterns`,
+      FragmentedIsotopeEnvelopes = `Isotope patterns sequenced`,
+      PercentIsotopeEnvelopesFragmented = 100 * FragmentedIsotopeEnvelopes / IsotopeEnvelopes,
+      .keep = "none") %>%
+    merge(maxQuantRecoveredSpectra, by = "File Name") %>%
+      mutate(PercentRecovery = 100 * SpectraRecovered/MbrPeaks)
+
+  # Removing the -calib apppended to file names to match the maxQuant results
+  metaResults$`File Name` <- str_replace(metaResults$`File Name`, "-calib", "")
+  
+  metaResults$SearchEngine <- "MetaMorpheus"
+  maxQuantResults$SearchEngine <- "MaxQuant"
+  
+  # Merge the results of each search engine
+  return( bind_rows(metaResults, maxQuantResults) )
+}
+
+# Function used to write the condition (e.g., sample mass) for each file in
+# a given dataset
+AssignConditionCombined <- function(fileNames, conditionPatterns){
+  
+  conditionAssignment <- character(length(fileNames))
+  
+  if(is.null(conditionPatterns))
+  {
+    conditionAssignment <- rep("Single Cell", length(conditionAssignment))
+  } 
+  else
+  {
+    for(i in 1:length(conditionPatterns))
+    {
+      conditionAssignment[grep(conditionPatterns[i], fileNames)] <- names(conditionPatterns)[i]
+    }
+  }
+  
+  return(conditionAssignment)
+}
