@@ -1,4 +1,4 @@
-Single Cell Data Analysis
+#Single Cell Data Analysis
 # V2, used for IsoWindow Spectral Recover Analysis
 library(tidyverse)
 library(viridis)
@@ -840,7 +840,7 @@ HighAnglePeaks <- GetHighPeaks(MaxQuantPeaks) %>%
 classifiedPeaks <- bind_rows(ZeroAnglePeaks, HighAnglePeaks)
 
 
-classifiedPeaks <- classifiedPeaks[classifiedPeaks$ApexMs2Offset < 0.15 & classifiedPeaks$ApexMs2Offset > -0.15,]
+#classifiedPeaks <- classifiedPeaks[classifiedPeaks$ApexMs2Offset < 0.15 & classifiedPeaks$ApexMs2Offset > -0.15,]
 
 ggplot(classifiedPeaks, aes(`Precursor Isotopic Envelope Score`, fill = AngleGroup)) + 
   geom_density(alpha = 0.2)  + ggtitle("Precursor Isotopic Envelope Score")
