@@ -257,6 +257,22 @@ GetSummaryResults <- function(singleCellEquivalent = TRUE)
   return(combinedAnalysis)
 }
 
+# Individual file analysis functions ----
+GetZeroPeaks <- function(peakQuant, threshold = 0.45) 
+{
+  zeroAnglePeaks <- peakQuant %>%
+    mutate(Angle  = as.numeric(`Normalized Spectral Angle`)) %>%
+    filter(Angle <= threshold & Angle > -1)
+  return(zeroAnglePeaks)
+}
+
+GetHighPeaks <- function(peakQuant, threshold = 0.54) 
+{
+  highAnglePeaks <- peakQuant %>%
+    mutate(Angle  = as.numeric(`Normalized Spectral Angle`)) %>%
+    filter(Angle > threshold)
+  return(highAnglePeaks)
+}
 
 
 
