@@ -38,8 +38,12 @@ P55Conditions <- c("500pg", "250pg", "125pg")
 P55ConditionPatterns <- c("neu0_5", "neu0_25", "neu0_125")
 names(P55ConditionPatterns) <- P55Conditions
 
+M37_HelaConditions <- c("Library", "Single Cell")
+M37_HelaConditionPatterns <- c("Lib_", "SC_")
+names(M37_HelaConditionPatterns) <- M37_HelaConditions
+
 ConditionPatterns <- list(
-  M37_HeLa = NULL,
+  M37_HeLa = M37_HelaConditionPatterns,
   M37_Lung = NULL,
   M24 = rev(M24ConditionPatterns),
   P15 = NULL,
@@ -110,9 +114,12 @@ SummarizeMqEvidence <- function(filePath)
   return(merge(maxQuantMbrCount, maxQuantPeptideCount, by = "Raw file"))
 }
 
-SummarizeMqSummary <- function(filePath)
+MergeMqResults <- function(folder)
 {
-  read_tsv(filePath) %>%
+  evidenceResults <- SummarizeMqEvidence(paste0(folder, "/evidence.txt"))
+  summaryFile <- read_tsv(paste0(folder, "/summary.txt"))
+  
+  mergedResults <- merge(evidenceResults, summaryFile, by = "Raw file") %>%
     mutate(
       `File Name` = `Raw file`,
       MbrPeaks = MbrPeaks,
@@ -125,8 +132,9 @@ SummarizeMqSummary <- function(filePath)
       IsotopeEnvelopes = `Isotope patterns`,
       FragmentedIsotopeEnvelopes = `Isotope patterns sequenced`,
       PercentIsotopeEnvelopesFragmented = 100 * FragmentedIsotopeEnvelopes / IsotopeEnvelopes,
-      .keep = "none"
-    )
+      .keep = "none")
+    
+  return(mergedResults)
 }
 
 #Analyzes multiple output files, then combines the information into one table
@@ -139,28 +147,14 @@ RunAnalysis <- function(MetaFolder, MaxQuantFolder, HighScoreThreshold = 0.6) {
   metaResults <- merge(mbrTableMeta, metaSummary, by = "File Name")
   
   # MaxQuant Analysis
-  maxQuantEvidence <- SummarizeMqEvidence(paste0(MaxQuantFolder, "/evidence.txt" ))
-  maxQuantSummary <- SummarizeMqSummary(paste0(MaxQuantFolder, "/summary.txt" ))
+  maxQuantSummary <- MergeMqResults(MaxQuantFolder)
   maxQuantRecoveredSpectra <- 
     SummarizeRecoveredSpectra(paste0(MaxQuantFolder, "/RecoveredSpectra.psmtsv"), HighScoreThreshold)
   
-  # Merge them all together
-  maxQuantResults <- merge(maxQuantEvidence, maxQuantSummary, by = "Raw file") %>%
-    mutate(
-      `File Name` = `Raw file`,
-      MbrPeaks = MbrPeaks,
-      MsmsPeaks = `MS/MS identified`,
-      PercentMbr = 100 * MbrPeaks / (MsmsPeaks + MbrPeaks),
-      UniquePeptides = `Peptide sequences identified`,
-      MsmsScans = `MS/MS`,
-      TotalPeaks = Peaks,
-      FragmentedPeaks = `Peaks sequenced`,
-      IsotopeEnvelopes = `Isotope patterns`,
-      FragmentedIsotopeEnvelopes = `Isotope patterns sequenced`,
-      PercentIsotopeEnvelopesFragmented = 100 * FragmentedIsotopeEnvelopes / IsotopeEnvelopes,
-      .keep = "none") %>%
-    merge(maxQuantRecoveredSpectra, by = "File Name") %>%
-      mutate(PercentRecovery = 100 * SpectraRecovered/MbrPeaks)
+  # Merge results from MaxQuant evidence and summary files 
+  maxQuantResults <- 
+    merge(maxQuantSummary, maxQuantRecoveredSpectra, by = "File Name") %>%
+    mutate(PercentRecovery = 100 * SpectraRecovered/MbrPeaks)
 
   # Removing the -calib apppended to file names to match the maxQuant results
   metaResults$`File Name` <- str_replace(metaResults$`File Name`, "-calib", "")
@@ -192,3 +186,86 @@ AssignConditionCombined <- function(fileNames, conditionPatterns){
   
   return(conditionAssignment)
 }
+
+GetAnalysisResults <- function(singleCellEquivalent = TRUE)
+{
+  
+  for (i in 1:6)
+  {
+    singleAnalysis <- RunAnalysis(MetaResultsFolders[[i]], MaxQuantResultsFolders[[i]]) %>%
+      mutate(
+        Condition = AssignConditionCombined(`File Name`, ConditionPatterns[[i]]),
+        Dataset = names(MetaResultsFolders)[i]
+        )
+    
+    if(singleCellEquivalent)
+    {
+      singleAnalysis %<>% filter(Condition %in% singleCellConditions)
+    }
+
+    if (i == 1) 
+    {
+      combinedAnalysis <- singleAnalysis
+    } 
+    else 
+    {
+      combinedAnalysis %<>% add_row(singleAnalysis)
+    }
+  }
+  
+  combinedAnalysis$Dataset <- factor(combinedAnalysis$Dataset, 
+                                     c("M37_HeLa", "M37_Lung", "P15", "M24", "P17", "P55") )
+  return(combinedAnalysis)
+}
+
+GetSummaryResults <- function(singleCellEquivalent = TRUE)
+{
+  for (i in 1:6){
+    singleAnalysis <- RunAnalysis(MetaResultsFolders[[i]], MaxQuantResultsFolders[[i]]) %>%
+      mutate(Condition = AssignConditionCombined(`File Name`, ConditionPatterns[[i]])) %>%
+      filter(Condition %in% singleCellConditions) %>% # Need to actually make this a check
+      group_by(SearchEngine) %>%
+      summarise(
+        `File Name` = names(MetaResultsFolders)[i],
+        MbrPeaksMean = mean(MbrPeaks),
+        MbrPeaksSd = sd(MbrPeaks),
+        MsmsIdsMean = mean(MsmsPeaks),
+        MsmsIdsSd = sd(MsmsPeaks),
+        PercentMbrMean = mean(PercentMbr),
+        PercentMbrSd = sd(PercentMbr),
+        SpectraRecoveredMean = mean(SpectraRecovered),
+        SpectraRecoveredSd = sd(SpectraRecovered),
+        PercentRecoveryMean = mean(PercentRecovery),
+        PercentRecoverySd = sd(PercentRecovery),
+        UniquePeptidesMean = mean(UniquePeptides),
+        UniquePeptidesSd = sd(UniquePeptides),
+        IsotopeEnvelopesMean = mean(IsotopeEnvelopes),
+        IsotopeEnvelopesSd = sd(IsotopeEnvelopes),
+        FragmentedIsotopeEnvelopesMean = mean(FragmentedIsotopeEnvelopes),
+        FragmentedIsotopeEnvelopesSd = sd(FragmentedIsotopeEnvelopes),
+        PercentIsotopeEnvelopesFragmentedMean = mean(PercentIsotopeEnvelopesFragmented),
+        PercentIsotopeEnvelopesFragmentedSd = sd(PercentIsotopeEnvelopesFragmented)
+      )
+    if (i == 1) {
+      combinedAnalysis <- singleAnalysis
+    } else {
+      combinedAnalysis %<>% add_row(singleAnalysis)
+    }
+  }
+  combinedAnalysis$Dataset <- factor(combinedAnalysis$`File Name`, 
+                                     c("M37_HeLa", "M37_Lung", "P15", "M24", "P17", "P55") )
+  return(combinedAnalysis)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
